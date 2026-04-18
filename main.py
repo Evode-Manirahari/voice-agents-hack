@@ -87,9 +87,13 @@ def capture_image() -> str | None:
 # ── AI engines ───────────────────────────────────────────────────────────────
 
 def load_on_device_model():
-    from src.cactus import cactus_init, cactus_log_set_level
-    cactus_log_set_level(4)
-    return cactus_init(str(WEIGHTS_DIR), None, False)
+    try:
+        from src.cactus import cactus_init, cactus_log_set_level
+        cactus_log_set_level(4)
+        return cactus_init(str(WEIGHTS_DIR), None, False)
+    except Exception as e:
+        print(f"  ⚠️  On-device model unavailable ({e.__class__.__name__}). Using cloud only.")
+        return None
 
 
 def ask_on_device(model, question: str) -> str:
@@ -212,7 +216,10 @@ def main():
 
     print("Loading on-device model (Gemma 270M)...")
     model = load_on_device_model()
-    print("✓ Model ready\n")
+    if model:
+        print("✓ On-device model ready\n")
+    else:
+        print("✓ Running in cloud-only mode (Gemini)\n")
 
     speak("Fix Guide ready. Let's get your repair done safely.")
 
@@ -224,8 +231,12 @@ def main():
             break
         run_repair_session(model)
 
-    from src.cactus import cactus_destroy
-    cactus_destroy(model)
+    if model:
+        try:
+            from src.cactus import cactus_destroy
+            cactus_destroy(model)
+        except Exception:
+            pass
     speak("Stay safe. Goodbye!")
     print("\nGoodbye!")
 
