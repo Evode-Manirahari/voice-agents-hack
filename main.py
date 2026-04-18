@@ -69,19 +69,28 @@ def transcribe_audio(audio_path: str) -> str:
 
 
 def capture_image() -> str | None:
+    # Try webcam first
     try:
         import cv2
         cap = cv2.VideoCapture(0)
         time.sleep(0.8)
         ret, frame = cap.read()
         cap.release()
-        if not ret:
-            return None
-        tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
-        cv2.imwrite(tmp.name, frame)
-        return tmp.name
+        if ret:
+            tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+            cv2.imwrite(tmp.name, frame)
+            return tmp.name
     except Exception:
-        return None
+        pass
+
+    # Webcam failed — ask user to provide a photo file (e.g. from phone)
+    print("\n  📱 Webcam unavailable. Send a photo from your phone to this Mac")
+    print("     (AirDrop, iMessage, or save anywhere), then enter the full path.")
+    print("     Or press Enter to skip image.\n")
+    path = input("  Image path: ").strip().strip("'\"")
+    if path and Path(path).exists():
+        return path
+    return None
 
 
 # ── AI engines ───────────────────────────────────────────────────────────────
@@ -107,36 +116,52 @@ def ask_on_device(model, question: str) -> str:
         return ""
 
 
-def ask_gemini_vision(image_path: str, question: str) -> str:
-    from google import genai
-    from google.genai import types
+GEMINI_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-8b"]
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
+
+def _gemini_client():
+    from google import genai
+    return genai.Client(api_key=GEMINI_API_KEY)
+
+
+def _gemini_generate(contents, system_prompt: str) -> str:
+    from google.genai import types
+    client = _gemini_client()
+    for model in GEMINI_MODELS:
+        try:
+            response = client.models.generate_content(
+                model=model,
+                config=types.GenerateContentConfig(system_instruction=system_prompt),
+                contents=contents,
+            )
+            return response.text.strip()
+        except Exception as e:
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                print(f"  ⚠️  {model} quota hit, trying next model...")
+                continue
+            raise
+    return "Sorry, all Gemini models are rate-limited right now. Please wait a moment and try again."
+
+
+def ask_gemini_vision(image_path: str, question: str) -> str:
+    from google.genai import types
     with open(image_path, "rb") as f:
         img_bytes = f.read()
-
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
+    mime = "image/jpeg" if image_path.lower().endswith((".jpg", ".jpeg")) else "image/png"
+    return _gemini_generate(
         contents=[
-            types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
+            types.Part.from_bytes(data=img_bytes, mime_type=mime),
             types.Part.from_text(text=question or "What needs fixing here? Guide me."),
         ],
+        system_prompt=SYSTEM_PROMPT,
     )
-    return response.text.strip()
 
 
 def ask_gemini_text(question: str, context: str) -> str:
-    from google import genai
-    from google.genai import types
-
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        config=types.GenerateContentConfig(system_instruction=FOLLOWUP_PROMPT),
+    return _gemini_generate(
         contents=[f"Prior context: {context}\n\nFollow-up question: {question}"],
+        system_prompt=FOLLOWUP_PROMPT,
     )
-    return response.text.strip()
 
 
 # ── main loop ────────────────────────────────────────────────────────────────
@@ -148,10 +173,10 @@ def run_repair_session(model):
     time.sleep(3)
     image_path = capture_image()
     if image_path:
-        print(f"  ✓ Image captured")
+        print(f"  ✓ Image ready: {image_path}")
     else:
-        print("  ⚠️  No camera found. Continuing without image.")
-        speak("No camera found. Please describe the problem.")
+        print("  ⚠️  No image. Continuing without image.")
+        speak("No image. Please describe the problem in detail.")
 
     # Step 2: voice input
     speak("Now describe what needs fixing.")
